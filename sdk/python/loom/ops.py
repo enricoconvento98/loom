@@ -7701,6 +7701,7 @@ class CodeUnit(TypedDict, total=False):
     recent_prs: NotRequired[list[dict[str, Any]]]
     examples: NotRequired[list[dict[str, Any]]]
     lessons: NotRequired[list[dict[str, Any]]]
+    lessons_unread: NotRequired[bool]
     churn: NotRequired[int]
     amp: NotRequired[int]
     tested: NotRequired[bool]

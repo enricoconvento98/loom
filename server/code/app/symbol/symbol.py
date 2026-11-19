@@ -272,7 +272,7 @@ async def _enrichment(
     async def none() -> None:
         return None
 
-    async def lessons() -> list[dict[str, Any]]:
+    async def lessons() -> list[dict[str, Any]] | None:
         if request_narrowed():
             return []  # a token that may not read every user's lessons
         return await code_enrich.lessons_for_symbol(
@@ -297,8 +297,11 @@ async def _enrichment(
         out["recent_prs"] = prs
     if examples is not None:
         out["examples"] = examples
-    if lessons_out is not None:
-        out["lessons"] = lessons_out
+    if input.include_lessons:
+        if lessons_out is None:
+            out["lessons_unread"] = True  # cut off or failed: not "no lessons"
+        else:
+            out["lessons"] = lessons_out
     return out
 
 
