@@ -366,7 +366,7 @@ Raised in `server/memory/app/blacklist.py`.
 
 #### `BLOB_GONE`
 
-Raised in `server/knowledge/app/download_routes.py`.
+Raised in `server/knowledge/app/download_routes.py`, `server/knowledge/app/source_downloads.py`.
 
 #### `BLOCK_PROMOTION_REFUSED`
 
@@ -424,6 +424,10 @@ Raised in `server/memory/app/handlers.py`.
 
 Raised in `server/knowledge/app/conversations.py`.
 
+#### `CONNECTION_UNAVAILABLE`
+
+Raised in `server/knowledge/app/connected_accounts.py`.
+
 #### `CONSTRAINT_VIOLATION`
 
 Raised in `server/memory/domain/record_values.py`.
@@ -431,6 +435,10 @@ Raised in `server/memory/domain/record_values.py`.
 #### `CONTRACT_FAILED`
 
 Raised in `server/tracker/app/sources.py`.
+
+#### `CONTROL_UPGRADE_REQUIRED`
+
+Raised in `server/router/app.py`.
 
 #### `CREDENTIAL_NOT_READONLY`
 
@@ -442,7 +450,7 @@ Raised in `server/tracker/app/sources.py`.
 
 #### `CREDENTIAL_REFUSED`
 
-Raised in `server/knowledge/app/sources.py`.
+Raised in `server/knowledge/app/connected_sources.py`, `server/knowledge/app/sources.py`.
 
 #### `CROSS_SITE_REQUEST`
 
@@ -670,7 +678,7 @@ Raised in `server/code/app/repo_admin.py`.
 
 #### `NOT_FOUND`
 
-Raised in `server/identity/app/me_service_accounts.py`, `server/knowledge/app/download_routes.py`, `server/knowledge/app/writes.py`, `server/memory/app/blacklist.py`.
+Raised in `server/identity/app/me_service_accounts.py`, `server/knowledge/app/download_routes.py`, `server/knowledge/app/source_downloads.py`, `server/knowledge/app/writes.py`, `server/memory/app/blacklist.py`.
 
 #### `NO_CELL`
 
@@ -752,6 +760,10 @@ Raised in `server/router/app.py`. Category `capacity`, retryable: yes.
 
 Raised in `server/router/app.py`. Category `dependency`, retryable: yes.
 
+#### `PROCESS_STOPPING`
+
+Raised in `server/transport/model_maintenance.py`, `server/transport/retirement.py`.
+
 #### `PROJECTION_BEHIND`
 
 HTTP 503, raised as `server.memory.app.pg_admission.ProjectionBehindError`. 503 — earlier commits in this namespace are not yet in ClickHouse, so a read of ClickHouse that must see every write the namespace committed would miss them. Category `capacity`, retryable: yes for an idempotent op, no for another op once it ran.
@@ -791,6 +803,10 @@ Raised in `server/code/app/repo_admin.py`.
 #### `REPO_QUOTA`
 
 Raised in `server/code/app/repo_admin.py`.
+
+#### `REQUEST_INTERRUPTED`
+
+Raised in `server/observability/ledger.py`.
 
 #### `RESERVED_BLOB_KEY`
 
@@ -851,6 +867,10 @@ Raised in `server/auth/self_signup.py`.
 #### `SENSITIVE_DEFINITION_REFUSED`
 
 HTTP 422, raised as `server.core.errors.SensitiveDefinitionRefusedError`. 422 — a definition labelled `medium`, or whose value reads as `medium` or `high`, is not promoted: the shared layer serves it to every reader of the namespace. Category `input`, retryable: no.
+
+#### `SESSION_PROTECTION_REQUIRED`
+
+HTTP 409, raised as `server.core.errors.SessionProtectionRequiredError`. 409 — session-content operations need the client's protection promise. Category `configuration`, retryable: no.
 
 #### `SHARED_CONFLICT`
 
@@ -951,6 +971,10 @@ Raised in `server/memory/app/apply.py`, `server/memory/app/lock.py`, `server/mem
 #### `VALIDATION_FAILED`
 
 HTTP 422, raised as `server.core.errors.ValidationError`. Category `input`, retryable: no. What to do: [common errors](#common-errors-and-what-to-do).
+
+#### `VECTOR_INPUT_TOO_LARGE`
+
+HTTP 422, raised as `server.core.errors.VectorInputTooLargeError`. 422 — an entity filter exceeds 64 raw names, or its canonical aliases or summary seeds exceed 256 distinct names. Category `input`, retryable: no.
 
 #### `VIEWS_NOT_READABLE`
 

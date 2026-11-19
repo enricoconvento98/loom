@@ -26,7 +26,12 @@ loom mint-token --subject my-bot --org acme --namespaces support --roles writer 
 
 `loom` ships with the server package and the Docker image, not with the SDK; in a container
 run `docker exec <server-container> loom mint-token ...`. Minting needs the signing key,
-`LOOM_JWT_SECRET`. A fresh clone gets a development secret from `.env.example`.
+`LOOM_JWT_SECRET`, and access to the deployment's migrated stores. The command verifies
+the paired stores and enrolls before reading the accepting cell state or signing.
+Offline native minting and minting before migrations refuse. If only the keyring read
+fails after successful enrollment, an ordinary mint can still sign with the root key.
+Platform-admin minting also requires a fresh readable fleet and a recorded audit event. A fresh clone gets a development
+secret from `.env.example`.
 `loom mint-token` and `loom doctor` warn while it is in use, and a deployment with auth on
 refuses to start with it (except the `make dev` stack).
 
@@ -104,6 +109,7 @@ loom mint-token --service-account --subject sa:ci --org acme \
 | `sa`                                                   | `true` for a service account, `false` for a user token.                                                                                                                                                                                       |
 | `jti`                                                  | The token's id: stamped on the audit and exposure ledgers as `token_id`, and the handle `loom revoke-token --jti` takes. Not a secret.                                                                                                        |
 | `parents`, `parent_subjects`, `parent_iats`, `creator` | Delegated tokens only: the ids, `sub`s and `iat`s of every ancestor token (`parents` also names a third-party MCP client's session), and the person whose live grants the token is rechecked against ([delegated tokens](#delegated-tokens)). |
+| `reads_as_creator`                                     | Boolean, absent means false: an explicitly minted personal-agent or assistant answer token names its creator for mirrored permission checks. Ordinary delegation never copies it.                                                             |
 | `exp`                                                  | Expiry, when minted with a TTL.                                                                                                                                                                                                               |
 | `iss`, `aud`, `iat`                                    | `LOOM_JWT_ISSUER` (`loom`), `LOOM_JWT_AUDIENCE` (`loom-platform`), issued-at.                                                                                                                                                                 |
 
@@ -399,6 +405,22 @@ with an issued-before cutoff judges each ancestor by its own `iat` and the perso
 root's, so a child minted after the cutoff from an older token dies with it; a delegated
 token without aligned `parent_iats` is refused. `loom mint-token` signs with the key and is
 not a delegation.
+
+### Personal-agent reader identity
+
+`POST /v1/me/personal_tokens.create` accepts the same token options as
+`service_accounts.create`, from your primary first-party sign-in session alone. It
+creates a token carrying `reads_as_creator: true` and lists it as
+`kind: personal_agent` in `GET /v1/me/service_accounts`. Revoke it with
+`POST /v1/me/service_accounts.revoke`, like your other tokens. Its namespace roles,
+expiry, lineage and live grant checks follow [delegated tokens](#delegated-tokens).
+
+The reader claim identifies the person whose verified identity a mirrored permission
+check must resolve; it grants no namespace or document access by itself. General
+service-account tokens carry no reader claim, even when their creator is a person. A
+child token never inherits it. The assistant can set it for one answer from a caller
+that already reads as that person. Mirrored source registration remains unavailable
+until its read and session protections are complete.
 
 ## Let people join a namespace
 

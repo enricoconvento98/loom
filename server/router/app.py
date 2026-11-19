@@ -4,7 +4,9 @@
   (`LOOM_CELL_ROUTER_TOKEN` there, its SHA-256 in the directory) and its configuration
   fingerprint, and gets back the cell and deployment id that hold it;
 - `GET /cells/v1/cells/<cell>`: the first cell's state (`attaching`, `serving`), for that
-  cell's own credential only, which it reads while its mode is `recording`;
+  cell's own credential only, which its processes read until they have read `serving`,
+  answered from each replica's read of the row at most once per
+  `LOOM_ROUTER_DIRECTORY_CACHE_S` (a failed read answering 503 for that window);
 - `GET /cells/lookup?org=`: which cell, and at which host, an org lives in (unauthenticated,
   rate-limited per client address); a placed org's answer is cached and given while the
   directory cannot be read, and before any cell is registered the lookup answers 503 with
@@ -49,6 +51,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, NamedTuple, Protocol
 from urllib.parse import parse_qs
+from uuid import UUID
 
 import httpx
 from starlette.applications import Starlette
@@ -162,6 +165,15 @@ def _this_version(value: dict[str, Any]) -> bool:
     return type(version) is int and version == cell_state.FINGERPRINT_VERSION
 
 
+class _StateRead(NamedTuple):
+    """One directory read of a first cell's row for its state route: the row (None when the
+    name is not the first cell), or the refusal of a read that failed, and when it ran."""
+
+    row: directory.Cell | None
+    error: str
+    read_at: float  # monotonic
+
+
 class _Placed(NamedTuple):
     cell: str
     host: str
@@ -209,10 +221,17 @@ class Router:
         self._table_lock = asyncio.Lock()
         self._refreshing: asyncio.Task[None] | None = None
         self._http: httpx.AsyncClient | None = None
+        # The first cell's row as its state route last read it, per cell name: read again
+        # once LOOM_ROUTER_DIRECTORY_CACHE_S old, a failed read answering 503 for its window
+        # too, so every process of a cell asking each period costs the directory one read
+        # per replica per window.
+        self._states: dict[str, _StateRead] = {}
+        self._states_lock = asyncio.Lock()
 
     def _forget_credentials(self) -> None:
         self._credentials_gen += 1
         self._credentials_at = None
+        self._states.clear()  # the rows they were read with are older than the change
 
     async def _credential(self, name: str) -> tuple[str, ...]:
         async with self._lock:
@@ -298,22 +317,45 @@ class Router:
 
     async def cell_state(self, request: Request) -> JSONResponse:
         """`GET /cells/v1/cells/<cell>`: the first cell's state, for its own credential
-        only. A first cell in `recording` records a new org only while this answers
-        `attaching`; any other answer counts as unreadable there."""
+        only, from this replica's last read of the row (`_state_row`). A first cell in
+        `recording` records a new org only while this answers `attaching`; any other
+        answer counts as unreadable there."""
         name = request.path_params["cell"]
         presented = await self._authenticated(request, name)
         if isinstance(presented, JSONResponse):
             return presented
-        try:
-            row = await directory.first_cell_named(name)
-        except directory.DirectoryUnavailable as e:
-            return _refused(503, e.reason)
+        read = await self._state_row(name)
+        if read.row is not None and not read.row.holds(presented):
+            # The cached row predates a rotation the credential cache has seen: read again.
+            self._forget_credentials()
+            read = await self._state_row(name)
+        if read.error:
+            return _refused(503, read.error)
+        row = read.row
         if row is None:
             return _refused(404, f"cell {name!r} is not the first cell")
         if not row.holds(presented):
-            self._forget_credentials()  # the cached hash is older than the row
             return _refused(401, "the credential names no cell of this directory")
         return JSONResponse({"cell": row.cell, "state": row.state})
+
+    async def _state_row(self, name: str) -> _StateRead:
+        """Cell `name`'s row for its state route, read from the directory at most once per
+        LOOM_ROUTER_DIRECTORY_CACHE_S; a failed read stands for its window too, timed from
+        when the read ended, so a read slower than the window still serves the requests
+        queued behind it."""
+        async with self._states_lock:
+            read = self._states.get(name)
+            if read is None or self._clock() - read.read_at >= settings.router_directory_cache_s:
+                gen = self._credentials_gen
+                try:
+                    row = await directory.first_cell_named(name)
+                    read = _StateRead(row, "", self._clock())
+                except directory.DirectoryUnavailable as e:
+                    read = _StateRead(None, e.reason, self._clock())
+                # A read that began before a change is not kept for a window.
+                if gen == self._credentials_gen:
+                    self._states[name] = read
+            return read
 
     async def lookup(self, request: Request) -> JSONResponse:
         client = request.client.host if request.client else ""
@@ -501,7 +543,12 @@ class Router:
             return refusal
         if refusal := _malformed_cell_refusal(request):
             return refusal
-        body = await _body(request)
+        body = _parsed(await _bounded(request, ATTACH_BEGIN_MAX_BYTES))
+        if not isinstance(body, dict):
+            return _refused(400, "this call's body is a JSON object")
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
         known = {"closed", "placements_max"}
         if not isinstance(body, dict) or not body or set(body) - known:
             return _refused(400, "a limit is a JSON object of closed and/or placements_max")
@@ -515,7 +562,7 @@ class Router:
             return _refused(400, "placements_max is a whole number, 0 or more, or null")
         return await _operator_answer(
             lambda: directory.set_limit(
-                request.path_params["cell"], closed=closed, placements_max=quota
+                request.path_params["cell"], closed=closed, placements_max=quota, expected=expected
             )
         )
 
@@ -526,7 +573,12 @@ class Router:
             return refusal
         if refusal := _malformed_cell_refusal(request):
             return refusal
-        body = await _body(request)
+        body = _parsed(await _bounded(request, ATTACH_BEGIN_MAX_BYTES))
+        if not isinstance(body, dict):
+            return _refused(400, "this call's body is a JSON object")
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
         if not isinstance(body, dict) or set(body) - {"step", "sha256"}:
             return _refused(400, "a rotation is a JSON object of step and sha256")
         step, sha = body.get("step"), body.get("sha256", "")
@@ -537,7 +589,9 @@ class Router:
         if step == "next" and _is_operator_hash(sha):
             return _refused(400, _OPERATOR_HASH_REFUSAL)
         response = await _operator_answer(
-            lambda: directory.rotate_credential(request.path_params["cell"], step, sha)
+            lambda: directory.rotate_credential(
+                request.path_params["cell"], step, sha, expected=expected
+            )
         )
         # This replica reads the hashes again on its next call. A 503 is included: its
         # change may have committed (BACKEND_UNAVAILABLE).
@@ -591,7 +645,7 @@ class Router:
         )
 
     async def _operator_body(
-        self, request: Request, limit: int = MAX_BODY_BYTES
+        self, request: Request, limit: int = ATTACH_BEGIN_MAX_BYTES
     ) -> dict[str, Any] | JSONResponse:
         """The operator call's JSON object, or its refusal: the credential, then the cell's
         name, then the body (413 past `limit`, 400 when it is no JSON object)."""
@@ -619,6 +673,19 @@ class Router:
             lambda found: {**_attach_answer(found), "other": found.other},
         )
 
+    async def claim(self, request: Request) -> JSONResponse:
+        body = await self._operator_body(request, ATTACH_BEGIN_MAX_BYTES)
+        if isinstance(body, JSONResponse):
+            return body
+        expected = _control(body, claim=True)
+        if isinstance(expected, JSONResponse):
+            return expected
+        if body:
+            return _refused(400, "a control claim contains only expected")
+        return await _answered(
+            lambda: directory.claim(request.path_params["cell"], expected), _attach_answer
+        )
+
     async def attach_begin(self, request: Request) -> JSONResponse:
         """`attach/begin`: once the probe listener echoes attach's nonces from the stores
         the row names and the upstream reports the row's deployment id, write when attach
@@ -627,6 +694,9 @@ class Router:
         body = await self._operator_body(request, ATTACH_BEGIN_MAX_BYTES)
         if isinstance(body, JSONResponse):
             return body
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
         name = request.path_params["cell"]
         parsed = _begin(body)
         if isinstance(parsed, JSONResponse):
@@ -635,17 +705,32 @@ class Router:
         found = await _read_attaching(name)
         if isinstance(found, JSONResponse):
             return found
-        if reason := directory.begin_refusal(found, begin):
+        if reason := directory.control_refusal(found, expected) or directory.begin_refusal(
+            found, begin
+        ):
             return _refused(409, reason)
         if refusal := await self._stores_check(found, nonces):
             return refusal
-        return await _answered(lambda: directory.attach_begin(name, begin), _attach_answer)
+        return await _answered(
+            lambda: directory.attach_begin(name, begin, expected=expected), _attach_answer
+        )
 
     async def attach_place(self, request: Request) -> JSONResponse:
         """`attach/place {deployment_id, orgs}`: a batch of at most ATTACH_BATCH orgs."""
         body = await self._operator_body(request)
         if isinstance(body, JSONResponse):
             return body
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
+        if (
+            len(json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode())
+            > MAX_BODY_BYTES
+        ):
+            return _refused(
+                413,
+                f"a placement batch without its control envelope is at most {MAX_BODY_BYTES} bytes",
+            )
         orgs = body.get("orgs")
         deployment_id = _text(body, "deployment_id", needed=True)
         if (
@@ -663,7 +748,7 @@ class Router:
         name = request.path_params["cell"]
         batch = [o for o in named if o is not None]
         return await _answered(
-            lambda: directory.attach_place(name, deployment_id, batch),
+            lambda: directory.attach_place(name, deployment_id, batch, expected=expected),
             lambda counts: {"cell": name, "placed": counts[0], "placed_orgs": counts[1]},
         )
 
@@ -672,12 +757,16 @@ class Router:
         body = await self._operator_body(request)
         if isinstance(body, JSONResponse):
             return body
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
         deployment_id = _text(body, "deployment_id", needed=True)
         if set(body) != {"deployment_id"} or deployment_id is None:
             return _refused(400, "attach/enforced is a JSON object of deployment_id")
         name = request.path_params["cell"]
         return await _answered(
-            lambda: directory.attach_enforced(name, deployment_id), _attach_answer
+            lambda: directory.attach_enforced(name, deployment_id, expected=expected),
+            _attach_answer,
         )
 
     async def attach_serving(self, request: Request) -> JSONResponse:
@@ -687,6 +776,9 @@ class Router:
         body = await self._operator_body(request)
         if isinstance(body, JSONResponse):
             return body
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
         deployment_id = _text(body, "deployment_id", needed=True)
         nonces: Any = body.get("nonces")
         if set(body) != {"deployment_id", "nonces"} or deployment_id is None:
@@ -697,18 +789,23 @@ class Router:
         found = await _read_attaching(name)
         if isinstance(found, JSONResponse):
             return found
+        if reason := directory.control_refusal(found, expected):
+            return _refused(409, reason)
         if not found.served(deployment_id):
             if reason := directory.attach_refusal(found, deployment_id, enforced=True):
                 return _refused(409, reason)
             if refusal := await self._stores_check(found, nonces):
                 return refusal
         response = await _answered(
-            lambda: directory.attach_serving(name, deployment_id), _attach_answer
+            lambda: directory.attach_serving(name, deployment_id, expected=expected), _attach_answer
         )
-        # A 503's change may have committed: this replica reads the cell's issuers on its
-        # next request either way.
+        # A 503's change may have committed: this replica reads the cell's issuers and state
+        # on its next request either way.
         if response.status_code in (200, 503):
             self._table_at = None
+            # Under the lock: a state read in flight stores its row first, then loses it.
+            async with self._states_lock:
+                self._states.pop(name, None)
         return response
 
     async def remove(self, request: Request) -> JSONResponse:
@@ -716,13 +813,18 @@ class Router:
         a cell `attaching` with no placement (`directory.remove`). The router cannot read
         the cell's Postgres: `loom cell remove` checks that a first cell's reads `open`, and
         a direct call skips that check."""
-        if refusal := self._operator(request):
-            return refusal
-        if refusal := _malformed_cell_refusal(request):
-            return refusal
+        body = await self._operator_body(request, ATTACH_BEGIN_MAX_BYTES)
+        if isinstance(body, JSONResponse):
+            return body
+        expected = _control(body)
+        if isinstance(expected, JSONResponse):
+            return expected
+        if body:
+            return _refused(400, "a removal contains only expected")
         name = request.path_params["cell"]
         response = await _answered(
-            lambda: directory.remove(name), lambda row: {"cell": row.cell, "removed": True}
+            lambda: directory.remove(name, expected=expected),
+            lambda row: {"cell": row.cell, "removed": True},
         )
         # A 503 is included: the removal may have committed (BACKEND_UNAVAILABLE).
         if response.status_code in (200, 503):
@@ -1271,6 +1373,41 @@ async def _answered[T](
     return JSONResponse(render(result))
 
 
+def _control(body: dict[str, Any], *, claim: bool = False) -> directory.Control | JSONResponse:
+    """Remove and validate the exact observed row; no caller may select a new token."""
+    value = body.pop("expected", None)
+    if not isinstance(value, dict):
+        return _refused(
+            409,
+            "cell control fencing requires upgraded control clients and every router replica",
+            code="CONTROL_UPGRADE_REQUIRED",
+        )
+    keys = set(directory.CONTROL_FIELDS) | (set() if claim else {"mutation_generation"})
+    if set(value) != keys:
+        return _refused(
+            400,
+            "expected contains the complete registration, fingerprint pair and claimed generation",
+        )
+    if type(value["is_first"]) is not bool or any(
+        not isinstance(value[name], str) or "\x00" in value[name]
+        for name in directory.CONTROL_IDENTITY
+        if name != "is_first"
+    ):
+        return _refused(400, "expected registration has invalid field types")
+    if any(
+        value[name] is not None and not isinstance(value[name], dict)
+        for name in ("current_fp", "next_fp")
+    ) or _holds_nul(value):
+        return _refused(400, "expected fingerprint pair contains JSON objects or null")
+    generation = None
+    if not claim:
+        try:
+            generation = UUID(value["mutation_generation"])
+        except (TypeError, ValueError, AttributeError):
+            return _refused(400, "expected mutation_generation is a UUID")
+    return directory.Control({name: value[name] for name in directory.CONTROL_FIELDS}, generation)
+
+
 def _limits(row: directory.Cell) -> dict[str, Any]:
     return {
         "cell": row.cell,
@@ -1300,6 +1437,8 @@ def _attach_answer(found: directory.Attaching) -> dict[str, Any]:
         "attach_started_at": started.isoformat() if started else None,
         "current_fp": row.current_fp,
         "next_fp": row.next_fp,
+        "mutation_generation": str(row.mutation_generation),
+        **{name: getattr(found, name) for name in directory._REGISTERED},
     }
 
 
@@ -1330,6 +1469,7 @@ def build_app(router: Router | None = None) -> Starlette:
                 methods=["POST"],
             ),
             Route("/cells/v1/operator/cells/{cell}", router.operator_cell, methods=["GET"]),
+            Route("/cells/v1/operator/cells/{cell}/claim", router.claim, methods=["POST"]),
             Route("/cells/v1/operator/cells/{cell}", router.remove, methods=["DELETE"]),
             Route(
                 "/cells/v1/operator/cells/{cell}/attach/begin",

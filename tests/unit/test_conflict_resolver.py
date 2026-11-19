@@ -2098,6 +2098,7 @@ async def test_a_peer_below_the_threshold_marks_the_write_but_never_flags_it(mon
     monkeypatch.setattr(cf, "get_client", lambda: ch)
     monkeypatch.setattr(settings, "memory_conflict_resolver_enabled", True)
     res = await cf.check_on_commit(
+        new_user_id="-",
         org="o",
         namespace="n",
         agent="ag",
@@ -2143,7 +2144,9 @@ async def test_a_bulk_row_whose_key_another_session_holds_is_owed(monkeypatch) -
     monkeypatch.setattr("server.memory.app.conflicts.namespace_conflict_policy", policy)
     from server.identity.domain.read_scope import WHOLE_NAMESPACE
 
-    monkeypatch.setattr("server.memory.app.key_supersession.request_scope", lambda: WHOLE_NAMESPACE)
+    monkeypatch.setattr(
+        "server.memory.app.conflicts._writer_scope", lambda user_id: WHOLE_NAMESPACE
+    )
     monkeypatch.setattr(settings, "memory_conflict_resolver_enabled", True)
     state = _BulkWriteState()
     ident = {"agent": "a", "user_id": "u", "session_id": "s1"}
@@ -2203,7 +2206,9 @@ async def test_a_bulk_update_inside_the_batch_is_owed_under_every_policy_but_app
     monkeypatch.setattr("server.memory.app.conflicts.namespace_conflict_policy", policy)
     from server.identity.domain.read_scope import WHOLE_NAMESPACE
 
-    monkeypatch.setattr("server.memory.app.key_supersession.request_scope", lambda: WHOLE_NAMESPACE)
+    monkeypatch.setattr(
+        "server.memory.app.conflicts._writer_scope", lambda user_id: WHOLE_NAMESPACE
+    )
     monkeypatch.setattr(settings, "memory_conflict_resolver_enabled", True)
     for name, want in (("newest_wins", 1), ("auto_reinforce", 1), ("append_only", None)):
         current["policy"] = name

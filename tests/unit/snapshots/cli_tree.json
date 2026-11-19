@@ -5550,11 +5550,21 @@
        "dests": [
         "help",
         "print_sql",
-        "print_analyst_sql"
+        "print_analyst_sql",
+        "apply_analyst_sql"
        ]
       }
      ],
-     "mutually_exclusive": [],
+     "mutually_exclusive": [
+      {
+       "required": false,
+       "dests": [
+        "print_sql",
+        "print_analyst_sql",
+        "apply_analyst_sql"
+       ]
+      }
+     ],
      "arguments": [
       {
        "option_strings": [
@@ -5599,7 +5609,22 @@
        "nargs": 0,
        "type": null,
        "required": false,
-       "help": "Print the SQL that writes insights.query's analyst user, for an admin where LOOM_CH_USER lacks access management. It holds the user's password and the scope key stored sealed in loom.analysis_secrets (drawn when there is none; where LOOM_CH_USER cannot list users, a missing row is drawn again, which moves the key): run it in full with `clickhouse-client --multiquery --queries-file <file>`, do not store it.",
+       "help": "Refuse unchecked analyst SQL files and name the guarded apply command.",
+       "metavar": null
+      },
+      {
+       "option_strings": [
+        "--apply-analyst-sql"
+       ],
+       "dest": "apply_analyst_sql",
+       "action": "_StoreTrueAction",
+       "default": false,
+       "const": true,
+       "choices": null,
+       "nargs": 0,
+       "type": null,
+       "required": false,
+       "help": "Apply only the analyst user with configured access-management credentials, after live policy, writer and private-event checks. Does not prepare the reader.",
        "metavar": null
       }
      ]
@@ -5682,8 +5707,7 @@
            "description": null,
            "dests": [
             "help",
-            "participant",
-            "yes"
+            "participant"
            ]
           }
          ],
@@ -5719,21 +5743,6 @@
            "required": true,
            "help": "The participant id to retire",
            "metavar": null
-          },
-          {
-           "option_strings": [
-            "--yes"
-           ],
-           "dest": "yes",
-           "action": "_StoreTrueAction",
-           "default": false,
-           "const": true,
-           "choices": null,
-           "nargs": 0,
-           "type": null,
-           "required": false,
-           "help": "Its process is confirmed stopped",
-           "metavar": null
           }
          ]
         }
@@ -5744,7 +5753,7 @@
        "choices_help": [
         {
          "dest": "retire",
-         "help": "Retire the provider participant of a process that died without shutting down (its id is `participant_id` in that process's /v1/health).",
+         "help": "Verify exact physical death on this trusted host and retire its participant after all queries settle (the id is participant_id in /v1/health).",
          "metavar": "retire"
         }
        ]
@@ -11213,6 +11222,9 @@
         "json",
         "client",
         "server_url",
+        "pg_allow_role",
+        "stray_orgs",
+        "stray_orgs_budget",
         "token"
        ]
       }
@@ -11278,6 +11290,51 @@
        "type": null,
        "required": false,
        "help": "Override the client's server URL.",
+       "metavar": null
+      },
+      {
+       "option_strings": [
+        "--pg-allow-role"
+       ],
+       "dest": "pg_allow_role",
+       "action": "_AppendAction",
+       "default": [],
+       "const": null,
+       "choices": null,
+       "nargs": null,
+       "type": null,
+       "required": false,
+       "help": "On a cell: a Postgres role that may make an org held (the servers' role).",
+       "metavar": null
+      },
+      {
+       "option_strings": [
+        "--stray-orgs"
+       ],
+       "dest": "stray_orgs",
+       "action": "_StoreTrueAction",
+       "default": false,
+       "const": true,
+       "choices": null,
+       "nargs": 0,
+       "type": null,
+       "required": false,
+       "help": "On a cell: also read the orgs its stores hold without a tenancy row.",
+       "metavar": null
+      },
+      {
+       "option_strings": [
+        "--stray-orgs-budget"
+       ],
+       "dest": "stray_orgs_budget",
+       "action": "_StoreAction",
+       "default": 60.0,
+       "const": null,
+       "choices": null,
+       "nargs": null,
+       "type": "builtins:float",
+       "required": false,
+       "help": "Seconds --stray-orgs may read for, smallest tables first (default 60).",
        "metavar": null
       },
       {
@@ -12574,7 +12631,7 @@
            "nargs": 0,
            "type": null,
            "required": false,
-           "help": "Take new orgs again",
+           "help": "Take new orgs again once serving",
            "metavar": null
           },
           {
@@ -12903,6 +12960,211 @@
            "metavar": null
           }
          ]
+        },
+        "attach": {
+         "prog": "loom cell attach",
+         "usage": null,
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse:HelpFormatter",
+         "add_help": true,
+         "allow_abbrev": true,
+         "defaults": {
+          "func": "server.cli.cell_attach:cmd_attach"
+         },
+         "groups": [
+          {
+           "title": "positional arguments",
+           "description": null,
+           "dests": []
+          },
+          {
+           "title": "options",
+           "description": null,
+           "dests": [
+            "help",
+            "cell",
+            "wait",
+            "scan_budget",
+            "dry_run",
+            "ch_allow_user",
+            "ch_allow_user_directory",
+            "ch_allow_object",
+            "ch_allow_replica",
+            "pg_allow_role",
+            "router"
+           ]
+          }
+         ],
+         "mutually_exclusive": [],
+         "arguments": [
+          {
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "dest": "help",
+           "action": "_HelpAction",
+           "default": "==SUPPRESS==",
+           "const": null,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "show this help message and exit",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--cell"
+           ],
+           "dest": "cell",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": "This cell's name (LOOM_CELL)",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--wait"
+           ],
+           "dest": "wait",
+           "action": "_StoreAction",
+           "default": 600,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": "builtins:int",
+           "required": false,
+           "help": "Seconds of wall time the waits share; 0 runs one try of each, with no retry",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--scan-budget"
+           ],
+           "dest": "scan_budget",
+           "action": "_StoreAction",
+           "default": 7200,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": "builtins:int",
+           "required": false,
+           "help": "Seconds one full org scan may take",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--dry-run"
+           ],
+           "dest": "dry_run",
+           "action": "_StoreTrueAction",
+           "default": false,
+           "const": true,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "Run the refusals and the scan and print what would be placed; keep cell state, tenancy triggers and placements unchanged. Command participation is still recorded (the router's own begin refusals do not run)",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--ch-allow-user"
+           ],
+           "dest": "ch_allow_user",
+           "action": "_AppendAction",
+           "default": [],
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "A ClickHouse user that may write the configured databases",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--ch-allow-user-directory"
+           ],
+           "dest": "ch_allow_user_directory",
+           "action": "_AppendAction",
+           "default": [],
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "A ClickHouse user directory the check cannot read",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--ch-allow-object"
+           ],
+           "dest": "ch_allow_object",
+           "action": "_AppendAction",
+           "default": [],
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "A ClickHouse object (db.name) that writes the databases",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--ch-allow-replica"
+           ],
+           "dest": "ch_allow_replica",
+           "action": "_AppendAction",
+           "default": [],
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "A replica outside the cluster (db.table:replica)",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--pg-allow-role"
+           ],
+           "dest": "pg_allow_role",
+           "action": "_AppendAction",
+           "default": [],
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "A Postgres role that may make an org held (the servers' role)",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--router"
+           ],
+           "dest": "router",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": "The router's URL (default: LOOM_CELL_ROUTER_URL)",
+           "metavar": null
+          }
+         ]
         }
        },
        "aliases_of": {
@@ -12910,7 +13172,8 @@
         "limit": "loom cell limit",
         "which": "loom cell which",
         "remove": "loom cell remove",
-        "prepare": "loom cell prepare"
+        "prepare": "loom cell prepare",
+        "attach": "loom cell attach"
        },
        "choices_help": [
         {
@@ -12937,6 +13200,11 @@
          "dest": "prepare",
          "help": "Register this cell in the router's directory and write its rows.",
          "metavar": "prepare"
+        },
+        {
+         "dest": "attach",
+         "help": "Attach the prepared first cell: place its orgs, serve.",
+         "metavar": "attach"
         }
        ]
       }
@@ -13337,6 +13605,527 @@
        "required": false,
        "help": "report what --apply would write, write nothing (the default)",
        "metavar": null
+      }
+     ]
+    },
+    "tracker-feed": {
+     "prog": "loom tracker-feed",
+     "usage": null,
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse:HelpFormatter",
+     "add_help": true,
+     "allow_abbrev": true,
+     "defaults": {},
+     "groups": [
+      {
+       "title": "positional arguments",
+       "description": null,
+       "dests": [
+        "feed_command"
+       ]
+      },
+      {
+       "title": "options",
+       "description": null,
+       "dests": [
+        "help"
+       ]
+      }
+     ],
+     "mutually_exclusive": [],
+     "arguments": [
+      {
+       "option_strings": [
+        "-h",
+        "--help"
+       ],
+       "dest": "help",
+       "action": "_HelpAction",
+       "default": "==SUPPRESS==",
+       "const": null,
+       "choices": null,
+       "nargs": 0,
+       "type": null,
+       "required": false,
+       "help": "show this help message and exit",
+       "metavar": null
+      },
+      {
+       "option_strings": [],
+       "dest": "feed_command",
+       "action": "_SubParsersAction",
+       "default": null,
+       "const": null,
+       "choices": null,
+       "nargs": "A...",
+       "type": null,
+       "required": true,
+       "help": null,
+       "metavar": null,
+       "subcommands": {
+        "init": {
+         "prog": "loom tracker-feed init",
+         "usage": null,
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse:HelpFormatter",
+         "add_help": true,
+         "allow_abbrev": true,
+         "defaults": {
+          "func": "server.cli.tracker_feed:_command"
+         },
+         "groups": [
+          {
+           "title": "positional arguments",
+           "description": null,
+           "dests": []
+          },
+          {
+           "title": "options",
+           "description": null,
+           "dests": [
+            "help",
+            "org",
+            "writer_user",
+            "writer_password_env",
+            "host",
+            "port",
+            "database",
+            "insecure"
+           ]
+          }
+         ],
+         "mutually_exclusive": [],
+         "arguments": [
+          {
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "dest": "help",
+           "action": "_HelpAction",
+           "default": "==SUPPRESS==",
+           "const": null,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "show this help message and exit",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--org"
+           ],
+           "dest": "org",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-user"
+           ],
+           "dest": "writer_user",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-password-env"
+           ],
+           "dest": "writer_password_env",
+           "action": "_StoreAction",
+           "default": "LOOM_TRACKER_FEED_WRITER_PASSWORD",
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--host"
+           ],
+           "dest": "host",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--port"
+           ],
+           "dest": "port",
+           "action": "_StoreAction",
+           "default": 8443,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": "builtins:int",
+           "required": false,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--database"
+           ],
+           "dest": "database",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--insecure"
+           ],
+           "dest": "insecure",
+           "action": "_StoreTrueAction",
+           "default": false,
+           "const": true,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "Use HTTP for a private development record",
+           "metavar": null
+          }
+         ]
+        },
+        "configure": {
+         "prog": "loom tracker-feed configure",
+         "usage": null,
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse:HelpFormatter",
+         "add_help": true,
+         "allow_abbrev": true,
+         "defaults": {
+          "func": "server.cli.tracker_feed:_command"
+         },
+         "groups": [
+          {
+           "title": "positional arguments",
+           "description": null,
+           "dests": []
+          },
+          {
+           "title": "options",
+           "description": null,
+           "dests": [
+            "help",
+            "org",
+            "writer_user",
+            "writer_password_env",
+            "source",
+            "repo",
+            "token_env",
+            "read_only_token",
+            "max_pages"
+           ]
+          }
+         ],
+         "mutually_exclusive": [],
+         "arguments": [
+          {
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "dest": "help",
+           "action": "_HelpAction",
+           "default": "==SUPPRESS==",
+           "const": null,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "show this help message and exit",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--org"
+           ],
+           "dest": "org",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-user"
+           ],
+           "dest": "writer_user",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-password-env"
+           ],
+           "dest": "writer_password_env",
+           "action": "_StoreAction",
+           "default": "LOOM_TRACKER_FEED_WRITER_PASSWORD",
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--source"
+           ],
+           "dest": "source",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--repo"
+           ],
+           "dest": "repo",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": "A repository in the source's allowlist",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--token-env"
+           ],
+           "dest": "token_env",
+           "action": "_StoreAction",
+           "default": "LOOM_TRACKER_FEED_GITHUB_TOKEN",
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--read-only-token"
+           ],
+           "dest": "read_only_token",
+           "action": "_StoreTrueAction",
+           "default": false,
+           "const": true,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "Attest the token has only read permissions",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--max-pages"
+           ],
+           "dest": "max_pages",
+           "action": "_StoreAction",
+           "default": 5,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": "builtins:int",
+           "required": false,
+           "help": "Pages per stream, from 2 to 100",
+           "metavar": null
+          }
+         ]
+        },
+        "sync": {
+         "prog": "loom tracker-feed sync",
+         "usage": null,
+         "description": null,
+         "epilog": null,
+         "formatter_class": "argparse:HelpFormatter",
+         "add_help": true,
+         "allow_abbrev": true,
+         "defaults": {
+          "func": "server.cli.tracker_feed:_command"
+         },
+         "groups": [
+          {
+           "title": "positional arguments",
+           "description": null,
+           "dests": []
+          },
+          {
+           "title": "options",
+           "description": null,
+           "dests": [
+            "help",
+            "org",
+            "writer_user",
+            "writer_password_env",
+            "source",
+            "repo"
+           ]
+          }
+         ],
+         "mutually_exclusive": [],
+         "arguments": [
+          {
+           "option_strings": [
+            "-h",
+            "--help"
+           ],
+           "dest": "help",
+           "action": "_HelpAction",
+           "default": "==SUPPRESS==",
+           "const": null,
+           "choices": null,
+           "nargs": 0,
+           "type": null,
+           "required": false,
+           "help": "show this help message and exit",
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--org"
+           ],
+           "dest": "org",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-user"
+           ],
+           "dest": "writer_user",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--writer-password-env"
+           ],
+           "dest": "writer_password_env",
+           "action": "_StoreAction",
+           "default": "LOOM_TRACKER_FEED_WRITER_PASSWORD",
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": false,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--source"
+           ],
+           "dest": "source",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": null,
+           "metavar": null
+          },
+          {
+           "option_strings": [
+            "--repo"
+           ],
+           "dest": "repo",
+           "action": "_StoreAction",
+           "default": null,
+           "const": null,
+           "choices": null,
+           "nargs": null,
+           "type": null,
+           "required": true,
+           "help": "A repository in the source's allowlist",
+           "metavar": null
+          }
+         ]
+        }
+       },
+       "aliases_of": {
+        "init": "loom tracker-feed init",
+        "configure": "loom tracker-feed configure",
+        "sync": "loom tracker-feed sync"
+       },
+       "choices_help": []
       }
      ]
     },
@@ -14301,7 +15090,8 @@
         "vscode",
         "cline",
         "windsurf",
-        "zed"
+        "zed",
+        "gemini"
        ],
        "nargs": "+",
        "type": null,
@@ -14366,7 +15156,7 @@
        "nargs": null,
        "type": "server.cli.install:_toolset_arg",
        "required": false,
-       "help": "MCP toolset the client lists, as `?toolset=` on the URL; when omitted, `coding` for claude-code, codex, cursor, else the server default (LOOM_MCP_TOOLSET).",
+       "help": "MCP toolset the client lists, as `?toolset=` on the URL; when omitted, `coding` for claude-code, codex, cursor, gemini, else the server default (LOOM_MCP_TOOLSET).",
        "metavar": null
       },
       {
@@ -15384,6 +16174,30 @@
      ],
      "mutually_exclusive": [],
      "arguments": []
+    },
+    "connect": {
+     "prog": "loom connect",
+     "usage": null,
+     "description": null,
+     "epilog": null,
+     "formatter_class": "argparse:HelpFormatter",
+     "add_help": false,
+     "allow_abbrev": true,
+     "defaults": {},
+     "groups": [
+      {
+       "title": "positional arguments",
+       "description": null,
+       "dests": []
+      },
+      {
+       "title": "options",
+       "description": null,
+       "dests": []
+      }
+     ],
+     "mutually_exclusive": [],
+     "arguments": []
     }
    },
    "aliases_of": {
@@ -15436,6 +16250,7 @@
     "tracker-contract-check": "loom tracker-contract-check",
     "tracker-dupcheck-fit": "loom tracker-dupcheck-fit",
     "tracker-embed-reset": "loom tracker-embed-reset",
+    "tracker-feed": "loom tracker-feed",
     "namespaces-adopt": "loom namespaces-adopt",
     "sensitivity-sweep": "loom sensitivity-sweep",
     "integrity-repair": "loom integrity-repair",
@@ -15453,7 +16268,8 @@
     "logout": "loom logout",
     "whoami": "loom whoami",
     "call": "loom call",
-    "token": "loom token"
+    "token": "loom token",
+    "connect": "loom connect"
    },
    "choices_help": [
     {
@@ -15623,7 +16439,7 @@
     },
     {
      "dest": "mint-token",
-     "help": "Mint a JWT locally (requires LOOM_JWT_SECRET).",
+     "help": "Mint a JWT locally (requires LOOM_JWT_SECRET and verified stores).",
      "metavar": "mint-token"
     },
     {
@@ -15700,6 +16516,11 @@
      "dest": "tracker-embed-reset",
      "help": "Clear the tracker_embed pass cursors of one tracker namespace so the next pass re-walks the window and re-embeds every item whose text recipe changed. Dry run by default (prints the cursors); --apply clears them.",
      "metavar": "tracker-embed-reset"
+    },
+    {
+     "dest": "tracker-feed",
+     "help": "Maintain a team's GitHub tracker record",
+     "metavar": "tracker-feed"
     },
     {
      "dest": "namespaces-adopt",
@@ -15790,6 +16611,11 @@
      "dest": "token",
      "help": "Make, list and revoke your own tokens for CI and agents (`loom token --help`).",
      "metavar": "token"
+    },
+    {
+     "dest": "connect",
+     "help": "Print the dashboard link to connect your own Google, Notion or Linear account.",
+     "metavar": "connect"
     }
    ]
   }

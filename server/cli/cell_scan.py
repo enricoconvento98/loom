@@ -58,12 +58,26 @@ from server.erasure.store.steps_pg import PG_CENSUS, PG_NO_MEMORY_CONTENT
 LOG_TABLES = frozenset(
     {
         "loom.agent_events",
+        "loom.agent_events_private",
         # A request refused at validation writes its row with the org it named.
         "loom.code_search_trace",
         # Refreshable views reading loom.agent_events.
         "loom.agent_cost_rollup_daily",
         "loom.subject_last_seen",
         "loom_telemetry.sli_minute",
+    }
+)
+
+# Tables a worker drains into another table, deleting what it moved: each is scanned
+# before every table that is not one, so a row moved mid-scan is read where it was or where
+# it went. A table a materialized view reads is ordered the same way, from
+# `system.tables` dependencies (`order_sources`).
+MOVE_SOURCES = frozenset(
+    {
+        "loom.learnings_queue",
+        "loom.memory_code_link_queue",
+        "loom.memory_extraction_queue",
+        "loom.memory_webhook_outbox",
     }
 )
 
@@ -338,6 +352,32 @@ async def list_postgres(conn: Any) -> tuple[list[str], list[Refusal]]:
     return names, refusals
 
 
+def order_sources(tables: list[Table], view_sources: Iterable[str]) -> list[Table]:
+    """`tables` with the move sources (`MOVE_SOURCES`, and every table a view reads,
+    `view_sources`, canonical names) first, each group by name."""
+    first = MOVE_SOURCES | set(view_sources)
+    return sorted(tables, key=lambda t: (t.canonical not in first, t.canonical))
+
+
+async def view_sources(
+    ch: Any, topology: Topology, names: Mapping[str, str], dbs: list[str]
+) -> set[str]:
+    """The tables of `dbs` a view depends on, as canonical names."""
+    rows = await per_host(
+        ch,
+        topology,
+        names,
+        "SELECT hostName() AS h, database, name FROM {source:tables} "
+        "WHERE database IN {dbs:Array(String)} AND notEmpty(dependencies_table)",
+        {"dbs": dbs},
+    )
+    return {
+        f"{ch_names.logical(str(r['database']))}.{r['name']}"
+        for found in rows.values()
+        for r in found
+    }
+
+
 async def list_tables(
     ch: Any, pg_conn: Any, topology: Topology, names: Mapping[str, str]
 ) -> TableList:
@@ -370,7 +410,8 @@ async def _list_tables(
     if copies := provider_copies(tables):
         out.refusals += copies
         return out
-    out.clickhouse, problems = judge_clickhouse(tables, classified, topology)
+    scanned, problems = judge_clickhouse(tables, classified, topology)
+    out.clickhouse = order_sources(scanned, await view_sources(ch, topology, names, databases()))
     out.refusals += problems
     out.refusals += await reverse_clickhouse(ch, tables, classified)
     out.postgres, problems = await list_postgres(pg_conn)
@@ -460,7 +501,7 @@ def pg_skip_scan_sql(table: str) -> str:
     return _PG_SKIP_SCAN.format(table=f"{pg_quote(schema)}.{pg_quote(name)}")
 
 
-async def _pg_orgs(table: str, budget: Budget) -> list[str]:
+async def pg_orgs(table: str, budget: Budget) -> list[str]:
     subject = f"postgres {table}"
     while True:
         left = budget.require(subject)
@@ -615,7 +656,7 @@ async def _read_scan(
     return _body_rows(b"".join(chunks).decode("utf-8", "replace").splitlines(), "k")
 
 
-async def _ch_orgs(ch: Any, table: Table, topology: Topology, budget: Budget) -> list[bytes | None]:
+async def ch_orgs(ch: Any, table: Table, topology: Topology, budget: Budget) -> list[bytes | None]:
     subject = f"clickhouse {table.canonical}"
     while True:
         budget.require(subject)
@@ -697,10 +738,10 @@ async def scan(
         result.add("configured", org)
     with query_tag(TAG):
         for name in tables.postgres:
-            for org in await _pg_orgs(name, budget):
+            for org in await pg_orgs(name, budget):
                 result.add(f"postgres {name}", org)
         for table in tables.clickhouse:
-            for raw in await _ch_orgs(ch, table, topology, budget):
+            for raw in await ch_orgs(ch, table, topology, budget):
                 result.add(f"clickhouse {table.canonical}", raw)
     result.elapsed_s = budget.elapsed()
     return result

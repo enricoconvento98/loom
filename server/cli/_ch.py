@@ -1,17 +1,16 @@
 """One ClickHouse connection for the whole of a CLI command, and the orgs it writes.
 
-Every command that connects declares what it writes for: `orgs=`, the orgs a command
-writes rows for, or `org_free=`, why it writes for none and whether it `reads`, `writes`
-(the cell's settings, a sweep of its own rows) or `revokes`. With `LOOM_CELL` set an
-org-free write or revocation is refused on another cell's stores (`check_org_free`), a
-revocation running through a Postgres outage. On a cell (`LOOM_CELL`), each declared org
-must be one the cell holds before the command runs (`server.auth.tenancy`), judged by
-the cell's rows read for the command: recorded while the cell is `recording` and the
-directory answers that it is `attaching`, refused once it is `enforced` (or the
-directory does not say `attaching`), never placed (`loom cell place` places one). With
-`LOOM_CELL` unset, under the Postgres authority, a command that declares an org is
-refused once its deployment is a cell past `recording` (`check_unset_cell`): its rows
-would land unchecked in a cell.
+Every command that connects declares what it writes for: `orgs=`, the orgs a command writes
+rows for, or `org_free=`, why it writes for none and whether it `reads`, `writes` (the
+cell's settings, a sweep of its own rows) or `revokes`. With `LOOM_CELL` set an org-free
+write or revocation is refused on another cell's stores (`check_org_free`), a revocation
+running through a Postgres outage. On a cell (`LOOM_CELL`), each declared org must be one
+the cell holds before the command runs (`server.auth.tenancy`), judged by the cell's rows
+read for the command: recorded while the cell is `recording` and the directory answers that
+it is `attaching`, refused once it is `enforced` (or the directory does not say
+`attaching`), never placed. With `LOOM_CELL` unset, under the Postgres authority, a command
+that declares an org is refused once its deployment is a cell past `recording`
+(`check_unset_cell`): its rows would land unchecked in a cell.
 `tests/unit/test_cell_cli_orgs.py` fails on a connect that declares neither, on an
 org-free one that does not say which kind it is, and on a connect under `server/cli/`
 outside this module.
@@ -24,11 +23,12 @@ import asyncio
 import logging
 import sys
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from server.core.ch import CHClient
+    from server.core.ch import CHClient, ExternalCHClient
 
 
 class OrgNotHeld(SystemExit):
@@ -194,7 +194,9 @@ async def check_setup_stores() -> None:
     gated connect (`loom ch-setup`), the gate a gated connect would run, before it writes:
     its ClickHouse, where it already records a deployment, must record its Postgres's, and
     the Postgres `first` row must not name another cell. A ClickHouse with no Loom
-    database or record yet (a service set up before the first boot) passes."""
+    database or record yet (a service set up before the first boot) passes. This
+    diagnostic discards the mode result and never installs an accepting view;
+    subsequent Loom row work must verify, enroll and check acceptance afresh."""
     from server.core import pg, pg_profile
     from server.core.ch import get_client
     from server.core.ch_errors import error_code, error_line
@@ -226,7 +228,12 @@ async def check_setup_stores() -> None:
             pg.expect_deployment((str(recorded["deployment_id"]), int(recorded["epoch"])))
         await check_org_free(writes("ClickHouse users and grants, no tenant rows"))
     finally:
-        await disconnect(ch)
+        first = sys.exception()
+        try:
+            await disconnect(ch)
+        except BaseException:  # a close failure must not replace the store-check refusal
+            if first is None:
+                raise
 
 
 async def check_orgs(orgs: Iterable[str]) -> None:
@@ -265,11 +272,7 @@ async def check_orgs(orgs: Iterable[str]) -> None:
     for org in orgs:
         try:
             await tenancy.ensure_held(org, None)
-        except WrongCellError as e:
-            raise OrgNotHeld(
-                f"refusing: {e.message} (`loom cell place --org {org}` places a new org)"
-            ) from None
-        except (BackendUnavailableError, ValidationError) as e:
+        except (WrongCellError, BackendUnavailableError, ValidationError) as e:
             raise OrgNotHeld(f"refusing: {e.message}") from None
 
 
@@ -300,12 +303,10 @@ async def connect_declared(
             from server.core.pg_profile import check_configured
 
             await check_configured(ch)
-        if org_free is not None and not named:
-            await check_org_free(org_free)
-        else:
-            await check_orgs(named)
+        await check_acceptance(orgs=named, org_free=org_free)
     except BaseException:
-        await disconnect(ch)
+        with suppress(BaseException):
+            await disconnect(ch)
         raise
 
 
@@ -320,6 +321,39 @@ async def connect_code_plane(ch: CHClient, args: argparse.Namespace) -> None:
     await connect_declared(ch, orgs=() if getattr(args, "dry_run", False) else (org,))
 
 
+async def check_acceptance(
+    *, orgs: Iterable[str | None] | None = None, org_free: OrgFree | None = None
+) -> None:
+    """Fresh post-enrollment gate check on already verified, open paired stores."""
+    named = _declared(orgs, org_free)
+    if org_free is not None and not named:
+        await check_org_free(org_free)
+    else:
+        await check_orgs(named)
+
+
+async def connect_verified(ch: CHClient) -> None:
+    """Verify paired stores without obtaining an acceptance view or admitting work.
+
+    Native commands enroll next, then repeat their accepting org/cell checks.
+    Operator-only commands may keep using the org-free checked composition.
+    """
+    from server.core.pg_profile import check_configured
+
+    if not ch.connected:
+        await ch.connect()
+    try:
+        await check_configured(ch)
+    except BaseException:  # Keep the pairing failure while closing its clients.
+        with suppress(BaseException):
+            await disconnect(ch)
+        raise
+    from server import boot
+    from server.core.background import register_buffer_drainer
+
+    register_buffer_drainer("boot-writes", boot.drain_writes)
+
+
 async def connect_checked(
     ch: CHClient, *, orgs: Iterable[str | None] | None = None, org_free: OrgFree | None = None
 ) -> None:
@@ -329,14 +363,31 @@ async def connect_checked(
     await connect_declared(ch, orgs=orgs, org_free=org_free, check_authority=True)
 
 
+async def connect_external(
+    ch: ExternalCHClient, *, deployment: CHClient, orgs: Iterable[str | None]
+) -> None:
+    """Gate the deployment and its orgs before connecting a separate record database.
+
+    The external record does not carry the deployment's authority metadata.
+    """
+    await connect_checked(deployment, orgs=orgs)
+    await ch.connect()
+
+
 async def disconnect(ch: CHClient) -> None:
     """Close the Postgres pool a command opened, then `ch`."""
-    from server.core import pg
+    from server.core import pg, retirement
 
     pg.expect_deployment(None)
     try:
-        await pg.close_pool()
-    finally:
+        gate = retirement.get_gate()
+        if not (gate.role == "command" and gate.closed):
+            await pg.close_pool()
+    except BaseException:  # Keep the pool close failure while closing ClickHouse.
+        with suppress(BaseException):
+            await ch.disconnect()
+        raise
+    else:
         await ch.disconnect()
 
 
@@ -350,20 +401,29 @@ def run_connected[T](
     command writes), disconnected on every path — an open client at loop close leaks its
     HTTP session."""
     from server import boot
+    from server.auth.account_lifecycle import bind
     from server.core.background import register_buffer_drainer
     from server.core.ch import get_client
     from server.insights.app.provider_command import model_command
+    from server.knowledge.app.connected_accounts import stop_subjects
 
+    bind(stop_subjects)
     named = _declared(orgs, org_free)
     register_buffer_drainer("boot-writes", boot.drain_writes)
 
     async def _go() -> T:
         ch = get_client()
-        await connect_checked(ch, orgs=named, org_free=org_free)
+        await connect_verified(ch)
         try:
             async with model_command():
-                return await run(ch)
-        finally:
+                await check_acceptance(orgs=named, org_free=org_free)
+                result = await run(ch)
+        except BaseException:  # Keep the command failure while disconnecting its clients.
+            with suppress(BaseException):
+                await disconnect(ch)
+            raise
+        else:
             await disconnect(ch)
+            return result
 
     return asyncio.run(_go())
