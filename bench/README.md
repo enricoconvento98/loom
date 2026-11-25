@@ -154,6 +154,10 @@ built from it is right.
   the release gate below.
 - **`extraction_eval.py`** / **`graph_eval.py`** — frozen extraction and
   triple-extraction regressions (`make bench-algorithm-gate`).
+- **`local_relation_extraction.py`** — entity and relation extraction on a
+  labeled corpus of service ownership and dependency notes, per extractor:
+  precision, recall, span accuracy, wrong-direction relations, coverage,
+  throughput, cold start and peak memory. Offline; each arm in its own process.
 - **`retention_curve.py`** / **`entity_drift.py`** — do seeded facts survive N
   periods of unrelated writes; how far an entity's summary moves between
   versions.
@@ -402,6 +406,7 @@ Langfuse's run-comparison view shows which queries moved. Details:
 | Where does loom sit on the published LoCoMo table?                             | `locomo_qa.py` (10 conversations, ~40 min, ~$5)                               |
 | Did extraction prompt output drift?                                            | `extraction_eval.py`                                                          |
 | Did graph/triple extraction drift?                                             | `graph_eval.py`                                                               |
+| Does a small local extractor match a chat model on declared types?             | `local_relation_extraction.py`                                                |
 | Why did query X miss?                                                          | `lme_diagnose.py` after longmemeval                                           |
 | Is recall holding without paying LLM-judge cost?                               | `quality.py`                                                                  |
 | Did ranking regress on a corpus that already exists?                           | `retrieval_recall.py` (recall@k + MRR + rank@1)                               |
